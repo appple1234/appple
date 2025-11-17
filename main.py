@@ -2,88 +2,107 @@ import streamlit as st
 from googleapiclient.discovery import build
 import pandas as pd
 
-# -----------------------------
-# Streamlit UI
-# -----------------------------
-st.set_page_config(page_title="YouTube Top Comment Finder", layout="centered")
-st.title("🔍 YouTube 영상에서 가장 좋아요 많은 댓글 찾기")
+# --------------------------------------------------
+# Streamlit: YouTube 댓글 좋아요 순 정렬 사이트
+# --------------------------------------------------
+st.set_page_config(page_title="YouTube 댓글 좋아요 순 정렬", layout="wide")
+st.title("🔍 YouTube 댓글 좋아요 순으로 정렬하는 사이트")
 
-st.write("유튜브 영상 URL 또는 ID를 입력하면, 해당 영상의 **가장 좋아요를 많이 받은 댓글**을 알려주는 사이트입니다.")
+st.write("유튜브 영상 링크를 입력하면 해당 영상의 댓글을 불러와 **좋아요 많은 순**으로 정렬해서 보여줍니다.")
 
+# -----------------------------
+# 입력값
+# -----------------------------
 api_key = st.text_input("YouTube Data API Key", type="password")
-video_url = st.text_input("YouTube 영상 URL 또는 Video ID 입력")
-
-run = st.button("가장 좋아요 많은 댓글 가져오기")
+video_url = st.text_input("YouTube 영상 URL 또는 Video ID")
+limit = st.slider("가져올 댓글 수 (최대 500개 권장)", 20, 500, 100)
+run = st.button("댓글 불러오기")
 
 # -----------------------------
-# Helper: Extract video ID
+# Helper: 영상 ID 추출
 # -----------------------------
 def extract_video_id(url):
     if "youtube.com/watch?v=" in url:
         return url.split("v=")[1].split("&")[0]
     elif "youtu.be/" in url:
         return url.split("youtu.be/")[1].split("?")[0]
-    return url  # assume already ID
+    return url
 
 # -----------------------------
-# YouTube API Call
+# YouTube API 댓글 가져오기
 # -----------------------------
-def fetch_top_comment(video_id, key):
+def get_comments(video_id, key, max_comments=200):
     youtube = build("youtube", "v3", developerKey=key)
     comments = []
+    next_page = None
+    fetched = 0
 
-    request = youtube.commentThreads().list(
-        part="snippet",
-        videoId=video_id,
-        maxResults=100,
-        order="relevance"
-    )
-    response = request.execute()
+    while True:
+        req = youtube.commentThreads().list(
+            part="snippet",
+            videoId=video_id,
+            maxResults=100,
+            pageToken=next_page,
+            order="relevance"
+        )
+        res = req.execute()
 
-    for item in response.get("items", []):
-        top_comment = item["snippet"]["topLevelComment"]["snippet"]
-        comments.append({
-            "author": top_comment.get("authorDisplayName"),
-            "text": top_comment.get("textDisplay"),
-            "likes": top_comment.get("likeCount"),
-            "published": top_comment.get("publishedAt"),
-        })
+        for item in res.get("items", []):
+            snip = item["snippet"]["topLevelComment"]["snippet"]
+            comments.append({
+                "author": snip.get("authorDisplayName"),
+                "comment": snip.get("textDisplay"),
+                "likes": snip.get("likeCount"),
+                "published": snip.get("publishedAt"),
+            })
+            fetched += 1
+            if fetched >= max_comments:
+                return pd.DataFrame(comments)
 
-    if not comments:
-        return None
+        next_page = res.get("nextPageToken")
+        if not next_page:
+            break
 
-    df = pd.DataFrame(comments)
-    df = df.sort_values("likes", ascending=False)
-    return df
+    return pd.DataFrame(comments)
 
 # -----------------------------
 # Run
 # -----------------------------
 if run:
     if not api_key or not video_url:
-        st.error("API Key와 영상 URL을 모두 입력해주세요.")
+        st.error("API 키와 영상 링크를 모두 입력해야 합니다.")
     else:
         vid = extract_video_id(video_url)
-        st.write(f"**Video ID:** `{vid}`")
+        st.write(f"### 🎬 Video ID: `{vid}`")
 
-        df = fetch_top_comment(vid, api_key)
+        df = get_comments(vid, api_key, limit)
         if df is None or df.empty:
-            st.error("댓글을 불러올 수 없습니다. 댓글이 없거나 API 제한일 수 있습니다.")
+            st.error("댓글을 불러올 수 없습니다. API 제한 또는 댓글 없음.")
         else:
-            top = df.iloc[0]
-            st.success("가장 좋아요 많은 댓글을 찾았습니다!")
+            df_sorted = df.sort_values("likes", ascending=False).reset_index(drop=True)
 
+            st.success("댓글 불러오기 완료! 좋아요 순으로 정렬했습니다.")
+
+            # Top comment highlight
+            top = df_sorted.iloc[0]
             st.markdown(f"""
-            ### 🏆 Top Comment
+            ## 🏆 가장 좋아요 많은 댓글
             **작성자:** {top['author']}  
             **좋아요:** {top['likes']} 👍  
             **작성일:** {top['published']}  
 
             ---
-            **댓글 내용:**  
-            {top['text']}
+            {top['comment']}
             """)
 
             st.write("---")
-            st.write("### 전체 상위 댓글 데이터")
-            st.dataframe(df)
+            st.write("## 📄 전체 정렬된 댓글 목록")
+            st.dataframe(df_sorted, use_container_width=True)
+
+            # CSV Export
+            st.download_button(
+                label="📥 CSV로 다운로드",
+                data=df_sorted.to_csv(index=False).encode('utf-8'),
+                file_name="youtube_comments_sorted.csv",
+                mime="text/csv"
+            )
